@@ -59,6 +59,34 @@ Add to `openclaw.json`:
 
 `gatewayToken` is the same token from `gateway.auth.token` in your `openclaw.json`.
 
+### Restrict who can wake whom
+
+Use `allowedTargets` to limit which agents can target which sessions:
+
+```json5
+{
+  plugins: {
+    entries: {
+      "openclaw-agent-relay": {
+        enabled: true,
+        config: {
+          authToken: "your-secret-token",
+          gatewayToken: "copy-from-gateway.auth.token",
+          allowedTargets: {
+            // wamm can only wake the broker
+            "wamm-survey-agent": ["agent:broker:*"],
+            // broker can only wake wamm
+            "broker": ["agent:wamm-survey-agent:*"]
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Patterns support trailing `:*` wildcards. Omit `allowedTargets` to allow all agents to wake any session.
+
 ## Usage
 
 ### Tool: `wake_agent`

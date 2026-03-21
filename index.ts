@@ -19,6 +19,7 @@ interface NotifyPayload {
   message?: string;
   channel?: string;
   to?: string;
+  callerAgent?: string;
 }
 
 interface PluginConfig {
@@ -26,6 +27,33 @@ interface PluginConfig {
   port?: number;
   gatewayPort?: number;
   gatewayToken?: string;
+  allowedTargets?: Record<string, string[]>;
+}
+
+// --- Target ACL ---
+
+function isTargetAllowed(
+  allowedTargets: Record<string, string[]> | undefined,
+  callerSessionKey: string | undefined,
+  targetSessionKey: string,
+): boolean {
+  if (!allowedTargets) return true; // no restrictions
+
+  // Extract agentId from caller sessionKey: "agent:<agentId>:..."
+  const callerAgent = callerSessionKey?.match(/^agent:([^:]+):/)?.[1];
+  if (!callerAgent) return true; // can't identify caller — allow (HTTP has its own auth)
+
+  const patterns = allowedTargets[callerAgent];
+  if (!patterns) return true; // no rule for this agent — allow
+
+  return patterns.some((pattern) => {
+    if (pattern === "*") return true;
+    // "agent:broker:*" matches "agent:broker:telegram:group:-123"
+    if (pattern.endsWith(":*")) {
+      return targetSessionKey.startsWith(pattern.slice(0, -1));
+    }
+    return targetSessionKey === pattern;
+  });
 }
 
 // --- Device Identity (Ed25519) ---
@@ -256,6 +284,7 @@ export default function agentRelay(api: OpenClawPluginApi) {
 
   const port = pluginCfg.port ?? 18790;
   const gatewayPort = pluginCfg.gatewayPort ?? 18789;
+  const allowedTargets = pluginCfg.allowedTargets;
   const { enqueueSystemEvent, requestHeartbeatNow } = api.runtime.system;
 
   api.logger.info(`agent-relay: device identity ${deviceIdentity.deviceId}`);
@@ -286,13 +315,31 @@ export default function agentRelay(api: OpenClawPluginApi) {
         },
         required: ["sessionKey", "message"],
       },
-      async execute(_id: string, params: { sessionKey: string; message: string }) {
+      async execute(_id: string, params: { sessionKey: string; message: string }, context?: { sessionKey?: string }) {
+        // Check ACL: does this agent have permission to wake the target?
+        const callerKey = context?.sessionKey ?? (api as any).sessionKey;
+        if (!isTargetAllowed(allowedTargets, callerKey, params.sessionKey)) {
+          api.logger.warn(`agent-relay: wake_agent blocked — ${callerKey} not allowed to target ${params.sessionKey}`);
+          return {
+            content: [{
+              type: "text" as const,
+              text: `Not allowed: your agent is not permitted to wake session ${params.sessionKey}. Check allowedTargets in plugin config.`,
+            }],
+            isError: true,
+          };
+        }
+
+        // Auto-sign: prepend caller info to message
+        const signedMessage = callerKey
+          ? `[from: ${callerKey}] ${params.message}`
+          : params.message;
+
         const result = await callGatewayAgent(
           {
             gatewayPort,
             gatewayToken: gatewayToken!,
             sessionKey: params.sessionKey,
-            message: params.message,
+            message: signedMessage,
           },
           api.logger,
         );
@@ -360,17 +407,33 @@ export default function agentRelay(api: OpenClawPluginApi) {
       return;
     }
 
-    const { sessionKey, message, channel, to } = payload;
+    const { sessionKey, message, channel, to, callerAgent } = payload;
     if (!sessionKey || !message) {
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Missing required fields: sessionKey, message" }));
       return;
     }
 
+    // Check ACL for HTTP callers (optional — callerAgent in payload)
+    if (callerAgent && allowedTargets) {
+      const callerKey = `agent:${callerAgent}:http`;
+      if (!isTargetAllowed(allowedTargets, callerKey, sessionKey)) {
+        api.logger.warn(`agent-relay: HTTP notify blocked — ${callerAgent} not allowed to target ${sessionKey}`);
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: `Not allowed: ${callerAgent} cannot target ${sessionKey}` }));
+        return;
+      }
+    }
+
+    // Auto-sign HTTP requests
+    const signedHttpMessage = callerAgent
+      ? `[from: agent:${callerAgent}] ${message}`
+      : message;
+
     // Primary path: gateway WebSocket RPC (like subagent announce)
     if (gatewayToken) {
       const result = await callGatewayAgent(
-        { gatewayPort, gatewayToken, sessionKey, message, channel, to },
+        { gatewayPort, gatewayToken, sessionKey, message: signedHttpMessage, channel, to },
         api.logger,
       );
 
@@ -385,7 +448,7 @@ export default function agentRelay(api: OpenClawPluginApi) {
     }
 
     // Fallback: enqueueSystemEvent + requestHeartbeatNow (requires heartbeat config)
-    const enqueued = enqueueSystemEvent(message, { sessionKey });
+    const enqueued = enqueueSystemEvent(signedHttpMessage, { sessionKey });
     requestHeartbeatNow({ sessionKey, reason: "agent-relay" });
 
     api.logger.info(`agent-relay: fallback notify to ${sessionKey}, enqueued=${enqueued}`);

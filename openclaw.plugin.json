@@ -21,6 +21,14 @@
       "gatewayToken": {
         "type": "string",
         "description": "Gateway auth token (from gateway.auth.token in openclaw.json)"
+      },
+      "allowedTargets": {
+        "type": "object",
+        "description": "Per-agent ACL: which sessionKey patterns each agent can target. Keys are agent IDs, values are arrays of sessionKey patterns (supports trailing :* wildcard). Omit to allow all targets.",
+        "additionalProperties": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
       }
     }
   },
@@ -42,6 +50,10 @@
       "label": "Gateway Token",
       "sensitive": true,
       "help": "Copy from gateway.auth.token in your openclaw.json"
+    },
+    "allowedTargets": {
+      "label": "Allowed Targets",
+      "help": "Per-agent ACL. Example: {\"wamm-survey-agent\": [\"agent:broker:*\"], \"broker\": [\"agent:wamm-survey-agent:*\"]}"
     }
   },
   "openclaw": {
