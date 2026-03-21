@@ -1,0 +1,50 @@
+{
+  "id": "openclaw-agent-relay",
+  "name": "Agent Relay",
+  "description": "Wake agents in existing sessions via gateway WebSocket RPC. Provides wake_agent tool and HTTP endpoint.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "authToken": {
+        "type": "string",
+        "description": "Bearer token for authenticating HTTP requests to /notify"
+      },
+      "port": {
+        "type": "number",
+        "description": "HTTP server port (default: 18790)"
+      },
+      "gatewayPort": {
+        "type": "number",
+        "description": "Gateway WebSocket port (default: 18789)"
+      },
+      "gatewayToken": {
+        "type": "string",
+        "description": "Gateway auth token (from gateway.auth.token in openclaw.json)"
+      }
+    }
+  },
+  "uiHints": {
+    "authToken": {
+      "label": "HTTP Auth Token",
+      "sensitive": true,
+      "help": "Bearer token for /notify HTTP endpoint"
+    },
+    "port": {
+      "label": "HTTP Port",
+      "help": "Port for the /notify HTTP endpoint (default: 18790)"
+    },
+    "gatewayPort": {
+      "label": "Gateway Port",
+      "help": "Gateway WebSocket port (default: 18789)"
+    },
+    "gatewayToken": {
+      "label": "Gateway Token",
+      "sensitive": true,
+      "help": "Copy from gateway.auth.token in your openclaw.json"
+    }
+  },
+  "openclaw": {
+    "extensions": ["./index.ts"]
+  }
+}
