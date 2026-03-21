@@ -1,14 +1,33 @@
 # openclaw-agent-relay
 
-Wake agents in their **existing sessions** via gateway WebSocket RPC. The agent sees your message with full conversation history and responds to the user through their channel (Telegram, Max, etc).
+Wake agents in their **existing sessions** via gateway WebSocket RPC. The agent sees your message with full conversation history and responds to the user through their channel (Telegram, Discord, etc).
 
 Think of it as `sessions_send` that actually delivers the response to the user, not to webchat.
 
 ## Why
 
-`sessions_send` delivers agent responses to the internal `webchat` channel — the user never sees them. [Issue #13374](https://github.com/openclaw/openclaw/issues/13374) is closed as NOT_PLANNED.
+Multi-agent setups need agents to talk to each other: a broker sends a reminder, a scheduler triggers a follow-up, a cron wakes an agent to check on a client. OpenClaw has `sessions_send` for this — but it doesn't solve the last mile: getting the response to the user.
 
-This plugin uses the same gateway RPC mechanism as subagent announce (`callGateway({ method: "agent" })`) to trigger agent turns that deliver responses through the correct channel.
+### The `sessions_send` problem
+
+`sessions_send` injects a message into another agent's session and preserves conversation history. But the agent's response goes to `channel=webchat` — an internal channel. The user on Telegram never sees it. [#13374](https://github.com/openclaw/openclaw/issues/13374) (closed NOT_PLANNED).
+
+Worse, `sessions_send` can corrupt the target session's delivery context, flipping it from `telegram` to `webchat` for all subsequent messages ([#44153](https://github.com/openclaw/openclaw/issues/44153), [#31671](https://github.com/openclaw/openclaw/issues/31671)).
+
+### Known workarounds and why they're fragile
+
+**Workaround 1: agent calls `message` tool explicitly.** The target agent sends the response via `message` with `channel: "telegram"` and an explicit `to`/`threadId`, then returns `ANNOUNCE_SKIP`. This works but requires embedding delivery instructions in every `sessions_send` payload. Multiple issues confirm this is the go-to community workaround ([#47971](https://github.com/openclaw/openclaw/issues/47971), [#44153](https://github.com/openclaw/openclaw/issues/44153), [#28603](https://github.com/openclaw/openclaw/issues/28603)).
+
+**Workaround 2: rely on announce step.** When `sessions_send` uses `timeout=0`, the target agent gets an announce step where it can write a response that gets delivered to Telegram. This technically works — but in practice the model tends to return `ANNOUNCE_SKIP` instead of writing the actual message. Even with explicit instructions, it "forgets" and skips the announce area. This is a known LLM behavior pattern ([#43295](https://github.com/openclaw/openclaw/issues/43295)) — models generate responses first and check rules second, if at all. You can fight this with very short prompts or runtime enforcement (`recallBeforeResponse`), but it remains unreliable.
+
+On top of that, announce delivery itself has issues:
+- Drops `threadId` for Telegram topics ([#47971](https://github.com/openclaw/openclaw/issues/47971), [#45878](https://github.com/openclaw/openclaw/issues/45878))
+- Silently fails with multi-channel setups ([#47524](https://github.com/openclaw/openclaw/issues/47524))
+- `ANNOUNCE_SKIP` text can leak to the user's Telegram ([#45084](https://github.com/openclaw/openclaw/issues/45084))
+
+### What this plugin does instead
+
+`openclaw-agent-relay` bypasses `sessions_send` and announce entirely. It uses the same gateway RPC mechanism as subagent announce (`callGateway({ method: "agent" })`) to run an agent turn in the **existing session** with `deliver: true`. The agent responds normally — no special instructions, no `ANNOUNCE_SKIP`, no message tool workarounds — and the response goes straight to Telegram.
 
 ## Install
 
@@ -53,7 +72,7 @@ wake_agent({
 })
 ```
 
-The target agent wakes up in their session, sees the message with full dialogue history, and responds to the user via Telegram/Max.
+The target agent wakes up in their session, sees the message with full dialogue history, and responds to the user via Telegram.
 
 ### HTTP: POST /notify
 
@@ -148,7 +167,7 @@ Falls back to `enqueueSystemEvent` + `requestHeartbeatNow` if gateway WebSocket 
 |---|---|---|
 | Agent sees message | Yes | Yes |
 | Session context preserved | Yes | Yes |
-| Response to Telegram/Max | **No** (webchat) | **Yes** |
+| Response to Telegram | **No** (webchat) | **Yes** |
 | Agent formulates response | Yes | Yes |
 | Available as tool | Yes (built-in) | Yes (plugin) |
 
