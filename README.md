@@ -89,12 +89,12 @@ Patterns support trailing `:*` wildcards. Omit `allowedTargets` to allow all age
 
 ## Usage
 
-### Tool: `wake_agent`
+### Tool: `notify_agent`
 
-Any agent can call `wake_agent` as a native tool:
+Any agent can call `notify_agent` as a native tool:
 
 ```
-wake_agent({
+notify_agent({
   sessionKey: "agent:my-agent:telegram:direct:123456",
   message: "Hey, remind the client about the contract"
 })
@@ -134,7 +134,7 @@ curl -X POST http://127.0.0.1:18790/notify \
 "Remind the WAMM client about the rental contract"
 
 🤖 BROKER → tool call
-wake_agent({
+notify_agent({
   sessionKey: "agent:wamm-survey:telegram:direct:647960541",
   message: "Remind the client they requested a rental contract. Ask when is convenient to send it."
 })
@@ -180,7 +180,7 @@ curl -X POST http://127.0.0.1:18790/notify \
 ## How it works
 
 1. Plugin generates an Ed25519 device identity at startup
-2. On `/notify` or `wake_agent` call, connects to gateway via WebSocket
+2. On `/notify` or `notify_agent` call, connects to gateway via WebSocket
 3. Authenticates with challenge-response (device signature + shared token)
 4. Calls `method: "agent"` with `sessionKey`, `message`, `deliver: true`
 5. Gateway runs an agent turn in the **existing** session (not isolated)
@@ -191,7 +191,7 @@ Falls back to `enqueueSystemEvent` + `requestHeartbeatNow` if gateway WebSocket 
 
 ## Comparison
 
-| | `sessions_send` | `wake_agent` |
+| | `sessions_send` | `notify_agent` |
 |---|---|---|
 | Agent sees message | Yes | Yes |
 | Session context preserved | Yes | Yes |

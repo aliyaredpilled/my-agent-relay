@@ -289,16 +289,15 @@ export default function agentRelay(api: OpenClawPluginApi) {
 
   api.logger.info(`agent-relay: device identity ${deviceIdentity.deviceId}`);
 
-  // --- Agent Tool: wake_agent ---
+  // --- Agent Tool: notify_agent ---
   // Allows any agent (e.g. broker) to wake another agent via native tool call
   if (gatewayToken) {
     api.registerTool({
-      name: "wake_agent",
+      name: "notify_agent",
       description:
-        "Wake another agent in their existing session. The agent will see your message " +
-        "as a user message in their session (with full conversation history) and respond " +
-        "to the user via their channel (Telegram/Max). This is like sessions_send but " +
-        "the response is delivered to the user, not to webchat.",
+        "Send a message to another agent in their existing session. The agent sees your message " +
+        "with full conversation history and responds to the user via their channel (Telegram). " +
+        "Use this to deliver responses, reminders, or instructions to other agents.",
       parameters: {
         type: "object",
         properties: {
@@ -319,7 +318,7 @@ export default function agentRelay(api: OpenClawPluginApi) {
         // Check ACL: does this agent have permission to wake the target?
         const callerKey = context?.sessionKey ?? (api as any).sessionKey;
         if (!isTargetAllowed(allowedTargets, callerKey, params.sessionKey)) {
-          api.logger.warn(`agent-relay: wake_agent blocked — ${callerKey} not allowed to target ${params.sessionKey}`);
+          api.logger.warn(`agent-relay: notify_agent blocked — ${callerKey} not allowed to target ${params.sessionKey}`);
           return {
             content: [{
               type: "text" as const,
@@ -345,7 +344,7 @@ export default function agentRelay(api: OpenClawPluginApi) {
         );
 
         if (result.ok) {
-          api.logger.info(`agent-relay: wake_agent tool triggered for ${params.sessionKey}`);
+          api.logger.info(`agent-relay: notify_agent tool triggered for ${params.sessionKey}`);
           return {
             content: [
               {
@@ -367,7 +366,7 @@ export default function agentRelay(api: OpenClawPluginApi) {
         };
       },
     });
-    api.logger.info("agent-relay: registered tool wake_agent");
+    api.logger.info("agent-relay: registered tool notify_agent");
   }
 
   let server: Server | null = null;
