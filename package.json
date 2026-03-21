@@ -1,7 +1,7 @@
 {
   "name": "openclaw-agent-relay",
-  "version": "2.0.0",
-  "description": "Wake agents in existing sessions via gateway WebSocket RPC. Like sessions_send, but the response is delivered to the user (Telegram/Max/etc), not webchat.",
+  "version": "3.0.0",
+  "description": "Send messages to agents in their existing sessions via gateway WebSocket RPC. The response is delivered to the user (Telegram, etc), not webchat.",
   "author": "aliyaredpilled",
   "license": "MIT",
   "type": "module",
@@ -19,7 +19,7 @@
     "openclaw-plugin",
     "agent-relay",
     "inter-agent",
-    "wake-agent",
+    "notify-agent",
     "sessions-send"
   ],
   "repository": {
