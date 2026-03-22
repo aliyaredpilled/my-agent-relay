@@ -133,6 +133,7 @@ async function callGatewayAgent(
     message: string;
     channel?: string;
     to?: string;
+    accountId?: string;
   },
   logger: OpenClawPluginApi["logger"],
 ): Promise<{ ok: boolean; error?: string }> {
@@ -251,6 +252,7 @@ async function callGatewayAgent(
             idempotencyKey: randomUUID(),
             ...(params.channel ? { channel: params.channel } : {}),
             ...(params.to ? { to: params.to } : {}),
+            ...(params.accountId ? { accountId: params.accountId } : {}),
           },
         }));
         return;
@@ -333,12 +335,16 @@ export default function agentRelay(api: OpenClawPluginApi) {
           ? `[from: ${callerKey}] ${params.message}`
           : params.message;
 
+        // Derive accountId from target sessionKey for multi-bot setups
+        const targetAgentId = params.sessionKey.match(/^agent:([^:]+):/)?.[1];
+
         const result = await callGatewayAgent(
           {
             gatewayPort,
             gatewayToken: gatewayToken!,
             sessionKey: params.sessionKey,
             message: signedMessage,
+            accountId: targetAgentId,
           },
           api.logger,
         );
@@ -429,10 +435,13 @@ export default function agentRelay(api: OpenClawPluginApi) {
       ? `[from: agent:${callerAgent}] ${message}`
       : message;
 
+    // Derive accountId from sessionKey for multi-bot setups
+    const targetAgentId = sessionKey.match(/^agent:([^:]+):/)?.[1];
+
     // Primary path: gateway WebSocket RPC (like subagent announce)
     if (gatewayToken) {
       const result = await callGatewayAgent(
-        { gatewayPort, gatewayToken, sessionKey, message: signedHttpMessage, channel, to },
+        { gatewayPort, gatewayToken, sessionKey, message: signedHttpMessage, channel, to, accountId: targetAgentId },
         api.logger,
       );
 
