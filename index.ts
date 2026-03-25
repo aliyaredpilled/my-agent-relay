@@ -1,4 +1,6 @@
 import { createServer, type Server } from "node:http";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { randomUUID, generateKeyPairSync, createPrivateKey, sign, createHash, createPublicKey } from "node:crypto";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 
@@ -32,7 +34,31 @@ interface PluginConfig {
   targetAliases?: Record<string, string>;
   /** Per-agent auto-sign control. Keys are agent IDs, values are booleans. Default: true for all. */
   autoSign?: Record<string, boolean>;
+  /** Default timezone for reminders, e.g. "Asia/Yekaterinburg" */
+  defaultTimezone?: string;
 }
+
+// --- Reminders ---
+
+interface Reminder {
+  id: string;
+  fireAt: number;
+  sessionKey: string;
+  message: string;
+  client?: string;
+  createdAt: number;
+}
+
+function loadReminders(path: string): Reminder[] {
+  try { return JSON.parse(readFileSync(path, "utf8")); } catch { return []; }
+}
+
+function saveReminders(path: string, reminders: Reminder[]): void {
+  writeFileSync(path, JSON.stringify(reminders, null, 2));
+}
+
+// Singleton: only the first plugin instance manages reminders (plugin is loaded per-agent)
+let remindersInitialized = false;
 
 // --- Target ACL ---
 
@@ -293,10 +319,55 @@ export default function agentRelay(api: OpenClawPluginApi) {
   const allowedTargets = pluginCfg.allowedTargets;
   const targetAliases = pluginCfg.targetAliases ?? {};
   const autoSignConfig = pluginCfg.autoSign ?? {};
+  const defaultTimezone = pluginCfg.defaultTimezone ?? "Asia/Yekaterinburg";
   const { enqueueSystemEvent, requestHeartbeatNow } = api.runtime.system;
 
   // Cache sender metadata from message_received for auto-sign enrichment
   const senderCache = new Map<string, { name?: string; username?: string }>();
+
+  // --- Reminders persistence ---
+  const remindersPath = join(api.rootDir ?? ".", "reminders.json");
+  const activeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  function fireReminder(r: Reminder) {
+    if (!gatewayToken) return;
+    // Dedup: check reminder still exists in file (another instance may have already fired it)
+    const all = loadReminders(remindersPath);
+    if (!all.some((x) => x.id === r.id)) return;
+    // Remove from file first (before delivery) to prevent double-fire on race
+    saveReminders(remindersPath, all.filter((x) => x.id !== r.id));
+    activeTimers.delete(r.id);
+
+    const targetAgentId = r.sessionKey.match(/^agent:([^:]+):/)?.[1];
+    callGatewayAgent(
+      { gatewayPort, gatewayToken, sessionKey: r.sessionKey, message: r.message, accountId: targetAgentId },
+      api.logger,
+    ).then((result) => {
+      if (result.ok) {
+        api.logger.info(`agent-relay: reminder delivered to ${r.sessionKey} (client: ${r.client ?? "?"})`);
+      } else {
+        api.logger.warn(`agent-relay: reminder delivery failed: ${result.error}`);
+      }
+    });
+  }
+
+  function scheduleReminder(r: Reminder) {
+    const delay = Math.max(0, r.fireAt - Date.now());
+    const timer = setTimeout(() => fireReminder(r), delay);
+    activeTimers.set(r.id, timer);
+  }
+
+  // Restore reminders from disk on startup (only once — first plugin instance wins)
+  if (!remindersInitialized) {
+    remindersInitialized = true;
+    const saved = loadReminders(remindersPath);
+    for (const r of saved) {
+      scheduleReminder(r);
+    }
+    if (saved.length > 0) {
+      api.logger.info(`agent-relay: restored ${saved.length} reminder(s) from disk`);
+    }
+  }
 
   api.logger.info(`agent-relay: device identity ${deviceIdentity.deviceId}`);
 
@@ -418,6 +489,118 @@ export default function agentRelay(api: OpenClawPluginApi) {
       },
     }));
     api.logger.info("agent-relay: registered tool notify_agent (factory pattern)");
+
+    // --- Tool: set_reminder ---
+    api.registerTool((ctx) => ({
+      name: "set_reminder",
+      description:
+        "Set a reminder that will be delivered back to the current conversation after a delay. " +
+        "Use either 'minutes' for relative time or 'time' for an exact date/time.",
+      parameters: {
+        type: "object",
+        properties: {
+          minutes: {
+            type: "number",
+            description: "Deliver reminder after this many minutes (e.g. 30, 120).",
+          },
+          time: {
+            type: "string",
+            description:
+              'Exact date/time in ISO format, e.g. "2026-03-26T12:00". ' +
+              "If no timezone offset given, uses the configured default (Asia/Yekaterinburg).",
+          },
+          message: {
+            type: "string",
+            description: "Reminder text that will be delivered back to this conversation.",
+          },
+        },
+        required: ["message"],
+      },
+      async execute(_id: string, params: { minutes?: number; time?: string; message: string }) {
+        if (!params.minutes && !params.time) {
+          return {
+            content: [{ type: "text" as const, text: "Specify either 'minutes' or 'time'." }],
+            isError: true,
+          };
+        }
+
+        let fireAt: number;
+        if (params.minutes) {
+          fireAt = Date.now() + params.minutes * 60_000;
+        } else {
+          // Parse time — add timezone if not specified
+          let timeStr = params.time!;
+          if (!timeStr.includes("+") && !timeStr.includes("Z") && !timeStr.match(/\d{2}:\d{2}$/)) {
+            // Resolve timezone offset
+            try {
+              const offsetMs = new Date().getTimezoneOffset() * 60_000;
+              const inTz = new Date(new Date(timeStr).getTime()).toLocaleString("sv", { timeZone: defaultTimezone });
+              fireAt = new Date(inTz).getTime();
+              // Simpler: use Intl to get correct offset
+              const now = new Date();
+              const formatter = new Intl.DateTimeFormat("en", { timeZone: defaultTimezone, timeZoneName: "shortOffset" });
+              const parts = formatter.formatToParts(now);
+              const tzPart = parts.find((p) => p.type === "timeZoneName")?.value ?? "";
+              const match = tzPart.match(/GMT([+-]\d+)/);
+              if (match) {
+                timeStr += match[1].padStart(3, "0").replace(/^([+-])(\d)$/, "$10$2") + ":00";
+              }
+            } catch {}
+            fireAt = new Date(timeStr).getTime();
+          } else {
+            fireAt = new Date(timeStr).getTime();
+          }
+        }
+
+        if (isNaN(fireAt) || fireAt < Date.now() - 60_000) {
+          return {
+            content: [{ type: "text" as const, text: `Invalid or past time. Parsed: ${new Date(fireAt).toISOString()}` }],
+            isError: true,
+          };
+        }
+
+        const callerKey = ctx.sessionKey;
+        if (!callerKey) {
+          return {
+            content: [{ type: "text" as const, text: "Cannot determine session — unable to set reminder." }],
+            isError: true,
+          };
+        }
+
+        const sender = senderCache.get(callerKey);
+        const reminder: Reminder = {
+          id: randomUUID(),
+          fireAt,
+          sessionKey: callerKey,
+          message: `Напоминание: ${params.message}`,
+          client: sender?.name,
+          createdAt: Date.now(),
+        };
+
+        // Save to disk + schedule
+        const all = loadReminders(remindersPath);
+        all.push(reminder);
+        saveReminders(remindersPath, all);
+        scheduleReminder(reminder);
+
+        const fireDate = new Date(fireAt);
+        const formatter = new Intl.DateTimeFormat("ru", {
+          timeZone: defaultTimezone,
+          day: "numeric", month: "long", hour: "2-digit", minute: "2-digit",
+        });
+        const humanTime = formatter.format(fireDate);
+
+        api.logger.info(`agent-relay: reminder set for ${callerKey} at ${fireDate.toISOString()} (client: ${sender?.name ?? "?"})`);
+
+        return {
+          content: [{
+            type: "text" as const,
+            text: `Reminder set for ${humanTime}. It will be delivered to this conversation automatically.`,
+          }],
+        };
+      },
+    }));
+    api.logger.info("agent-relay: registered tool set_reminder");
   }
 
   // Cache sender info: message_received has name but no sessionKey for custom channels,
