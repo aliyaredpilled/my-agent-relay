@@ -322,6 +322,16 @@ export default function agentRelay(api: OpenClawPluginApi) {
   const defaultTimezone = pluginCfg.defaultTimezone ?? "Asia/Yekaterinburg";
   const { enqueueSystemEvent, requestHeartbeatNow } = api.runtime.system;
 
+  // Build agentId+channel → accountId lookup from bindings
+  const accountIdMap = new Map<string, string>();
+  const bindings = (api.config as any)?.bindings ?? [];
+  for (const b of bindings) {
+    if (b.agentId && b.match?.channel && b.match?.accountId) {
+      accountIdMap.set(`${b.agentId}:${b.match.channel}`, b.match.accountId);
+    }
+  }
+  api.logger.info(`agent-relay: accountId map: ${JSON.stringify(Object.fromEntries(accountIdMap))}`);
+
   // Cache sender metadata from message_received for auto-sign enrichment
   const senderCache = new Map<string, { name?: string; username?: string }>();
 
@@ -338,9 +348,15 @@ export default function agentRelay(api: OpenClawPluginApi) {
     saveReminders(remindersPath, all.filter((x) => x.id !== r.id));
     activeTimers.delete(r.id);
 
-    const targetAgentId = r.sessionKey.match(/^agent:([^:]+):/)?.[1];
+    const reminderParts = r.sessionKey.match(/^agent:([^:]+):([^:]+):(?:[^:]+:)*?(direct|group):(.+)$/);
+    const reminderAgentId = reminderParts?.[1];
+    const targetChannel = reminderParts?.[2];
+    const targetTo = reminderParts?.[4];
+    const reminderAccountId = reminderAgentId && targetChannel
+      ? accountIdMap.get(`${reminderAgentId}:${targetChannel}`)
+      : undefined;
     callGatewayAgent(
-      { gatewayPort, gatewayToken, sessionKey: r.sessionKey, message: r.message, accountId: targetAgentId },
+      { gatewayPort, gatewayToken, sessionKey: r.sessionKey, message: r.message, channel: targetChannel, to: targetTo, accountId: reminderAccountId },
       api.logger,
     ).then((result) => {
       if (result.ok) {
@@ -452,8 +468,16 @@ export default function agentRelay(api: OpenClawPluginApi) {
 
         api.logger.info(`agent-relay: notify_agent from=${callerKey ?? "unknown"} to=${params.to ?? ""}(${resolvedKey}) sign=${shouldSign}`);
 
-        // Derive accountId from target sessionKey for multi-bot setups
-        const targetAgentId = resolvedKey.match(/^agent:([^:]+):/)?.[1];
+        // Derive channel, delivery target, and accountId from target sessionKey
+        // Format: agent:<agentId>:<channel>:[accountId:]<peerType>:<peerId>
+        const targetParts = resolvedKey.match(/^agent:([^:]+):([^:]+):(?:[^:]+:)*?(direct|group):(.+)$/);
+        const targetAgentId = targetParts?.[1];
+        const targetChannel = targetParts?.[2];
+        const targetTo = targetParts?.[4]; // peerId (chatId for telegram)
+        // Resolve accountId from bindings (agentId !== accountId for wamm-survey)
+        const targetAccountId = targetAgentId && targetChannel
+          ? accountIdMap.get(`${targetAgentId}:${targetChannel}`)
+          : undefined;
 
         const result = await callGatewayAgent(
           {
@@ -461,7 +485,9 @@ export default function agentRelay(api: OpenClawPluginApi) {
             gatewayToken: gatewayToken!,
             sessionKey: resolvedKey,
             message: signedMessage,
-            accountId: targetAgentId,
+            channel: targetChannel,
+            to: targetTo,
+            accountId: targetAccountId,
           },
           api.logger,
         );
@@ -688,13 +714,14 @@ export default function agentRelay(api: OpenClawPluginApi) {
       ? `[from: agent:${callerAgent}] ${message}`
       : message;
 
-    // Derive accountId from sessionKey for multi-bot setups
-    const targetAgentId = sessionKey.match(/^agent:([^:]+):/)?.[1];
+    // Resolve accountId from bindings for correct bot delivery
+    const httpParts = sessionKey.match(/^agent:([^:]+):([^:]+):/);
+    const httpAccountId = httpParts ? accountIdMap.get(`${httpParts[1]}:${httpParts[2]}`) : undefined;
 
     // Primary path: gateway WebSocket RPC (like subagent announce)
     if (gatewayToken) {
       const result = await callGatewayAgent(
-        { gatewayPort, gatewayToken, sessionKey, message: signedHttpMessage, channel, to, accountId: targetAgentId },
+        { gatewayPort, gatewayToken, sessionKey, message: signedHttpMessage, channel, to, accountId: httpAccountId },
         api.logger,
       );
 
