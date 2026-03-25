@@ -28,6 +28,10 @@ interface PluginConfig {
   gatewayPort?: number;
   gatewayToken?: string;
   allowedTargets?: Record<string, string[]>;
+  /** Short aliases for target session keys, e.g. { "broker": "agent:broker:telegram:group:-123" } */
+  targetAliases?: Record<string, string>;
+  /** Per-agent auto-sign control. Keys are agent IDs, values are booleans. Default: true for all. */
+  autoSign?: Record<string, boolean>;
 }
 
 // --- Target ACL ---
@@ -287,14 +291,21 @@ export default function agentRelay(api: OpenClawPluginApi) {
   const port = pluginCfg.port ?? 18790;
   const gatewayPort = pluginCfg.gatewayPort ?? 18789;
   const allowedTargets = pluginCfg.allowedTargets;
+  const targetAliases = pluginCfg.targetAliases ?? {};
+  const autoSignConfig = pluginCfg.autoSign ?? {};
   const { enqueueSystemEvent, requestHeartbeatNow } = api.runtime.system;
+
+  // Cache sender metadata from message_received for auto-sign enrichment
+  const senderCache = new Map<string, { name?: string; username?: string }>();
 
   api.logger.info(`agent-relay: device identity ${deviceIdentity.deviceId}`);
 
   // --- Agent Tool: notify_agent ---
-  // Allows any agent (e.g. broker) to wake another agent via native tool call
+  // Uses tool factory pattern so ctx.sessionKey is available even for sandbox agents.
+  // The factory is called per-session; ctx.sessionKey comes from the gateway (host-side),
+  // not from the sandbox, so it's always populated.
   if (gatewayToken) {
-    api.registerTool({
+    api.registerTool((ctx) => ({
       name: "notify_agent",
       description:
         "Send a message to another agent in their existing session. The agent sees your message " +
@@ -303,46 +314,81 @@ export default function agentRelay(api: OpenClawPluginApi) {
       parameters: {
         type: "object",
         properties: {
+          to: {
+            type: "string",
+            description:
+              'Target agent name (short alias), e.g. "broker". ' +
+              "Configured aliases map this to the full session key automatically.",
+          },
           sessionKey: {
             type: "string",
             description:
-              'Target agent session key, e.g. "agent:wamm-survey-agent:telegram:direct:647960541". ' +
-              "Use sessions_list to find active sessions.",
+              "Full target session key (use this only if no alias is configured for the target).",
           },
           message: {
             type: "string",
             description: "Message to send to the agent (they will see it as a user message).",
           },
         },
-        required: ["sessionKey", "message"],
+        required: ["message"],
       },
-      async execute(_id: string, params: { sessionKey: string; message: string }, context?: { sessionKey?: string }) {
+      async execute(_id: string, params: { to?: string; sessionKey?: string; message: string }) {
+        // Resolve target: alias → full sessionKey
+        const resolvedKey = params.to
+          ? targetAliases[params.to]
+          : params.sessionKey;
+
+        if (!resolvedKey) {
+          const hint = params.to
+            ? `Unknown alias "${params.to}". Available: ${Object.keys(targetAliases).join(", ") || "none"}`
+            : "Missing sessionKey or to parameter.";
+          return {
+            content: [{ type: "text" as const, text: hint }],
+            isError: true,
+          };
+        }
+
+        // ctx.sessionKey is injected by the factory — works for sandbox agents too
+        const callerKey = ctx.sessionKey;
+
         // Check ACL: does this agent have permission to wake the target?
-        const callerKey = context?.sessionKey ?? (api as any).sessionKey;
-        if (!isTargetAllowed(allowedTargets, callerKey, params.sessionKey)) {
-          api.logger.warn(`agent-relay: notify_agent blocked — ${callerKey} not allowed to target ${params.sessionKey}`);
+        if (!isTargetAllowed(allowedTargets, callerKey, resolvedKey)) {
+          api.logger.warn(`agent-relay: notify_agent blocked — ${callerKey} not allowed to target ${resolvedKey}`);
           return {
             content: [{
               type: "text" as const,
-              text: `Not allowed: your agent is not permitted to wake session ${params.sessionKey}. Check allowedTargets in plugin config.`,
+              text: `Not allowed: your agent is not permitted to wake session ${resolvedKey}. Check allowedTargets in plugin config.`,
             }],
             isError: true,
           };
         }
 
-        // Auto-sign: prepend caller info to message
-        const signedMessage = callerKey
-          ? `[from: ${callerKey}] ${params.message}`
-          : params.message;
+        // Auto-sign: prepend caller session key (configurable per agent)
+        const callerAgent = callerKey?.match(/^agent:([^:]+):/)?.[1];
+        const shouldSign = callerAgent ? (autoSignConfig[callerAgent] ?? true) : true;
+
+        let prefix = "";
+        if (callerKey && shouldSign) {
+          prefix = `[from: ${callerKey}]\n`;
+          // Enrich with sender metadata if available
+          const sender = senderCache.get(callerKey);
+          if (sender) {
+            const parts = [sender.name, sender.username ? `@${sender.username}` : ""].filter(Boolean);
+            if (parts.length) prefix += `[client: ${parts.join(" ")}]\n`;
+          }
+        }
+        const signedMessage = prefix + params.message;
+
+        api.logger.info(`agent-relay: notify_agent from=${callerKey ?? "unknown"} to=${params.to ?? ""}(${resolvedKey}) sign=${shouldSign}`);
 
         // Derive accountId from target sessionKey for multi-bot setups
-        const targetAgentId = params.sessionKey.match(/^agent:([^:]+):/)?.[1];
+        const targetAgentId = resolvedKey.match(/^agent:([^:]+):/)?.[1];
 
         const result = await callGatewayAgent(
           {
             gatewayPort,
             gatewayToken: gatewayToken!,
-            sessionKey: params.sessionKey,
+            sessionKey: resolvedKey,
             message: signedMessage,
             accountId: targetAgentId,
           },
@@ -350,12 +396,11 @@ export default function agentRelay(api: OpenClawPluginApi) {
         );
 
         if (result.ok) {
-          api.logger.info(`agent-relay: notify_agent tool triggered for ${params.sessionKey}`);
           return {
             content: [
               {
                 type: "text" as const,
-                text: `Agent woken in session ${params.sessionKey}. They will see your message and respond to the user via their channel.`,
+                text: `Message delivered to ${params.to ?? resolvedKey}.`,
               },
             ],
           };
@@ -371,9 +416,34 @@ export default function agentRelay(api: OpenClawPluginApi) {
           isError: true,
         };
       },
-    });
-    api.logger.info("agent-relay: registered tool notify_agent");
+    }));
+    api.logger.info("agent-relay: registered tool notify_agent (factory pattern)");
   }
+
+  // Cache sender info: message_received has name but no sessionKey for custom channels,
+  // before_agent_start has sessionKey but no sender name. Combine both.
+  let pendingSender: { name?: string; username?: string } | null = null;
+
+  api.on("message_received", (event: any, ctx: any) => {
+    const sessionKey = ctx?.sessionKey;
+    const name = event?.metadata?.senderName;
+    const username = event?.metadata?.senderUsername;
+    if (name || username) {
+      if (sessionKey) {
+        senderCache.set(sessionKey, { name, username });
+      } else {
+        // Custom channels (Max) don't pass sessionKey here — save for before_agent_start
+        pendingSender = { name, username };
+      }
+    }
+  });
+
+  api.on("before_agent_start", (_event: any, ctx: any) => {
+    if (pendingSender && ctx?.sessionKey) {
+      senderCache.set(ctx.sessionKey, pendingSender);
+      pendingSender = null;
+    }
+  });
 
   let server: Server | null = null;
 

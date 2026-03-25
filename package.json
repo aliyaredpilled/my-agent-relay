@@ -6,7 +6,10 @@
   "license": "MIT",
   "type": "module",
   "openclaw": {
-    "extensions": ["./index.ts"]
+    "extensions": ["./index.ts"],
+    "compat": {
+      "pluginApi": ">=1.0.0"
+    }
   },
   "peerDependencies": {
     "openclaw": "*"
@@ -24,6 +27,6 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/aliyaredpilled/openclaw-agent-relay"
+    "url": "git+https://github.com/aliyaredpilled/openclaw-agent-relay.git"
   }
 }
