@@ -659,7 +659,7 @@ export default function agentRelay(api: OpenClawPluginApi) {
   server = createServer(async (req, res) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
 
-    if (req.method !== "POST" || req.url !== "/notify") {
+    if (req.method !== "POST" || (req.url !== "/notify" && req.url !== "/remind")) {
       res.writeHead(404, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Not found" }));
       return;
@@ -691,6 +691,49 @@ export default function agentRelay(api: OpenClawPluginApi) {
       return;
     }
 
+    // --- /remind endpoint ---
+    if (req.url === "/remind") {
+      const { sessionKey: rSessionKey, message: rMessage, minutes, time, client } = payload as any;
+      if (!rSessionKey || !rMessage) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Missing required fields: sessionKey, message" }));
+        return;
+      }
+      if (!minutes && !time) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Specify either 'minutes' or 'time'" }));
+        return;
+      }
+      let fireAt: number;
+      if (minutes) {
+        fireAt = Date.now() + Number(minutes) * 60_000;
+      } else {
+        fireAt = new Date(String(time)).getTime();
+      }
+      if (isNaN(fireAt) || fireAt < Date.now() - 60_000) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: `Invalid or past time: ${new Date(fireAt).toISOString()}` }));
+        return;
+      }
+      const reminder: Reminder = {
+        id: randomUUID(),
+        fireAt,
+        sessionKey: rSessionKey,
+        message: `Напоминание: ${rMessage}`,
+        client,
+        createdAt: Date.now(),
+      };
+      const all = loadReminders(remindersPath);
+      all.push(reminder);
+      saveReminders(remindersPath, all);
+      scheduleReminder(reminder);
+      api.logger.info(`agent-relay: HTTP reminder set for ${rSessionKey} at ${new Date(fireAt).toISOString()} (client: ${client ?? "?"})`);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, reminderId: reminder.id, fireAt: new Date(fireAt).toISOString() }));
+      return;
+    }
+
+    // --- /notify endpoint ---
     const { sessionKey, message, channel, to, callerAgent } = payload;
     if (!sessionKey || !message) {
       res.writeHead(400, { "Content-Type": "application/json" });
@@ -746,7 +789,7 @@ export default function agentRelay(api: OpenClawPluginApi) {
 
   server.listen(port, "127.0.0.1", () => {
     api.logger.info(
-      `agent-relay: listening on http://127.0.0.1:${port}/notify` +
+      `agent-relay: listening on http://127.0.0.1:${port}/notify + /remind` +
       (gatewayToken ? " (gateway RPC enabled)" : " (system event fallback only)"),
     );
   });
