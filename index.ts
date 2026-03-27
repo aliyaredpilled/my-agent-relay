@@ -303,13 +303,21 @@ async function callGatewayAgent(
 export default function agentRelay(api: OpenClawPluginApi) {
   const pluginCfg = (api.pluginConfig ?? {}) as PluginConfig;
   const configKeys = Object.keys(pluginCfg);
-  api.logger.info(`agent-relay: plugin loaded (configKeys: [${configKeys.join(", ")}], hasPluginConfig: ${!!api.pluginConfig})`);
 
-  const authToken = pluginCfg.authToken;
-  const gatewayToken = pluginCfg.gatewayToken;
+  // Fallback: when loaded via resolvePluginTools fallback with empty config,
+  // try to recover settings from the full OpenClaw config (api.config).
+  const fullCfg = (api.config as any) ?? {};
+  const fallbackPluginCfg = fullCfg?.plugins?.entries?.["agent-relay"]?.config as PluginConfig | undefined;
+  const fallbackGatewayToken = fullCfg?.gateway?.auth?.token as string | undefined;
+
+  const authToken = pluginCfg.authToken ?? fallbackPluginCfg?.authToken;
+  const gatewayToken = pluginCfg.gatewayToken ?? fallbackPluginCfg?.gatewayToken ?? fallbackGatewayToken;
+  const usedFallback = configKeys.length === 0 && (authToken || gatewayToken);
+
+  api.logger.info(`agent-relay: plugin loaded (configKeys: [${configKeys.join(", ")}], hasPluginConfig: ${!!api.pluginConfig}${usedFallback ? ", recoveredFromFullConfig: true" : ""})`);
 
   if (!authToken && !gatewayToken) {
-    api.logger.warn("agent-relay: missing config (authToken + gatewayToken) — loaded without plugin config, tools will not be registered");
+    api.logger.warn("agent-relay: missing config (authToken + gatewayToken) — no plugin config and no fallback available, tools will not be registered");
     return;
   }
 
@@ -320,12 +328,12 @@ export default function agentRelay(api: OpenClawPluginApi) {
     api.logger.warn("agent-relay: missing config.gatewayToken — will fall back to system events only");
   }
 
-  const port = pluginCfg.port ?? 18790;
-  const gatewayPort = pluginCfg.gatewayPort ?? 18789;
-  const allowedTargets = pluginCfg.allowedTargets;
-  const targetAliases = pluginCfg.targetAliases ?? {};
-  const autoSignConfig = pluginCfg.autoSign ?? {};
-  const defaultTimezone = pluginCfg.defaultTimezone ?? "Asia/Yekaterinburg";
+  const port = pluginCfg.port ?? fallbackPluginCfg?.port ?? 18790;
+  const gatewayPort = pluginCfg.gatewayPort ?? fallbackPluginCfg?.gatewayPort ?? 18789;
+  const allowedTargets = pluginCfg.allowedTargets ?? fallbackPluginCfg?.allowedTargets;
+  const targetAliases = pluginCfg.targetAliases ?? fallbackPluginCfg?.targetAliases ?? {};
+  const autoSignConfig = pluginCfg.autoSign ?? fallbackPluginCfg?.autoSign ?? {};
+  const defaultTimezone = pluginCfg.defaultTimezone ?? fallbackPluginCfg?.defaultTimezone ?? "Asia/Yekaterinburg";
   const { enqueueSystemEvent, requestHeartbeatNow } = api.runtime.system;
 
   // Build agentId+channel → accountId lookup from bindings
