@@ -304,16 +304,12 @@ export default function agentRelay(api: OpenClawPluginApi) {
   const pluginCfg = (api.pluginConfig ?? {}) as PluginConfig;
 
   const authToken = pluginCfg.authToken;
-  const gatewayToken = pluginCfg.gatewayToken;
-
-  if (!authToken && !gatewayToken) {
-    api.logger.warn("agent-relay: missing config (authToken + gatewayToken) — loaded without plugin config, tools will not be registered");
+  if (!authToken) {
+    api.logger.warn("agent-relay: missing config.authToken — disabled");
     return;
   }
 
-  if (!authToken) {
-    api.logger.info("agent-relay: no authToken — HTTP server will be disabled, tools still available");
-  }
+  const gatewayToken = pluginCfg.gatewayToken;
   if (!gatewayToken) {
     api.logger.warn("agent-relay: missing config.gatewayToken — will fall back to system events only");
   }
@@ -659,11 +655,6 @@ export default function agentRelay(api: OpenClawPluginApi) {
   });
 
   let server: Server | null = null;
-
-  if (!authToken) {
-    api.logger.info("agent-relay: HTTP server skipped (no authToken)");
-    return;
-  }
 
   server = createServer(async (req, res) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
