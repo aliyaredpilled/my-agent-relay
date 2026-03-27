@@ -301,12 +301,25 @@ async function callGatewayAgent(
 }
 
 export default function agentRelay(api: OpenClawPluginApi) {
-  const pluginCfg = (api.pluginConfig ?? {}) as PluginConfig;
+  // TEMP TEST: simulate empty pluginConfig (remove after testing!)
+  const _realCfg = (api.pluginConfig ?? {}) as PluginConfig;
+  const SIMULATE_EMPTY = process.env.AGENT_RELAY_TEST_EMPTY === "1";
+  const pluginCfg = SIMULATE_EMPTY ? {} as PluginConfig : _realCfg;
   const configKeys = Object.keys(pluginCfg);
+  if (SIMULATE_EMPTY) {
+    api.logger.warn("agent-relay: ⚠️ SIMULATE_EMPTY mode — testing fallback path");
+  }
 
   // Fallback: when loaded via resolvePluginTools fallback with empty config,
   // try to recover settings from the full OpenClaw config (api.config).
   const fullCfg = (api.config as any) ?? {};
+  // DEBUG: log api.config shape to verify fallback availability
+  if (configKeys.length === 0) {
+    const fullKeys = Object.keys(fullCfg);
+    const hasPluginEntries = !!fullCfg?.plugins?.entries?.["agent-relay"];
+    const hasGatewayAuth = !!fullCfg?.gateway?.auth?.token;
+    api.logger.warn(`agent-relay: EMPTY pluginConfig — api.config keys: [${fullKeys.join(", ")}], hasPluginEntries: ${hasPluginEntries}, hasGatewayAuth: ${hasGatewayAuth}`);
+  }
   const fallbackPluginCfg = fullCfg?.plugins?.entries?.["agent-relay"]?.config as PluginConfig | undefined;
   const fallbackGatewayToken = fullCfg?.gateway?.auth?.token as string | undefined;
 
