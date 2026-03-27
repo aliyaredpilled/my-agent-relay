@@ -302,6 +302,8 @@ async function callGatewayAgent(
 
 export default function agentRelay(api: OpenClawPluginApi) {
   const pluginCfg = (api.pluginConfig ?? {}) as PluginConfig;
+  const configKeys = Object.keys(pluginCfg);
+  api.logger.info(`agent-relay: plugin loaded (configKeys: [${configKeys.join(", ")}], hasPluginConfig: ${!!api.pluginConfig})`);
 
   const authToken = pluginCfg.authToken;
   const gatewayToken = pluginCfg.gatewayToken;
@@ -631,6 +633,8 @@ export default function agentRelay(api: OpenClawPluginApi) {
       },
     }));
     api.logger.info("agent-relay: registered tool set_reminder");
+  } else {
+    api.logger.warn("agent-relay: gatewayToken missing — notify_agent and set_reminder NOT registered");
   }
 
   // Cache sender info: message_received has name but no sessionKey for custom channels,
