@@ -301,36 +301,41 @@ async function callGatewayAgent(
 }
 
 export default function agentRelay(api: OpenClawPluginApi) {
-  // TEMP TEST: simulate empty pluginConfig (remove after testing!)
-  const _realCfg = (api.pluginConfig ?? {}) as PluginConfig;
-  const SIMULATE_EMPTY = process.env.AGENT_RELAY_TEST_EMPTY === "1";
-  const pluginCfg = SIMULATE_EMPTY ? {} as PluginConfig : _realCfg;
+  const pluginCfg = (api.pluginConfig ?? {}) as PluginConfig;
   const configKeys = Object.keys(pluginCfg);
-  if (SIMULATE_EMPTY) {
-    api.logger.warn("agent-relay: ⚠️ SIMULATE_EMPTY mode — testing fallback path");
-  }
+  const hasDirectConfig = configKeys.length > 0;
 
-  // Fallback: when loaded via resolvePluginTools fallback with empty config,
-  // try to recover settings from the full OpenClaw config (api.config).
+  // --- Config recovery chain (3 levels) ---
+  // Level 1: pluginConfig (normal path — OpenClaw passes plugin entries)
+  // Level 2: api.config (full OpenClaw config — may survive fallback loads)
+  // Level 3: process.env (systemd always has OPENCLAW_GATEWAY_TOKEN)
   const fullCfg = (api.config as any) ?? {};
-  // DEBUG: log api.config shape to verify fallback availability
-  if (configKeys.length === 0) {
-    const fullKeys = Object.keys(fullCfg);
-    const hasPluginEntries = !!fullCfg?.plugins?.entries?.["agent-relay"];
-    const hasGatewayAuth = !!fullCfg?.gateway?.auth?.token;
-    api.logger.warn(`agent-relay: EMPTY pluginConfig — api.config keys: [${fullKeys.join(", ")}], hasPluginEntries: ${hasPluginEntries}, hasGatewayAuth: ${hasGatewayAuth}`);
-  }
+  const fullCfgKeys = Object.keys(fullCfg);
   const fallbackPluginCfg = fullCfg?.plugins?.entries?.["agent-relay"]?.config as PluginConfig | undefined;
   const fallbackGatewayToken = fullCfg?.gateway?.auth?.token as string | undefined;
+  const envGatewayToken = process.env.OPENCLAW_GATEWAY_TOKEN;
 
   const authToken = pluginCfg.authToken ?? fallbackPluginCfg?.authToken;
-  const gatewayToken = pluginCfg.gatewayToken ?? fallbackPluginCfg?.gatewayToken ?? fallbackGatewayToken;
-  const usedFallback = configKeys.length === 0 && (authToken || gatewayToken);
+  const gatewayToken = pluginCfg.gatewayToken
+    ?? fallbackPluginCfg?.gatewayToken
+    ?? fallbackGatewayToken
+    ?? envGatewayToken;
 
-  api.logger.info(`agent-relay: plugin loaded (configKeys: [${configKeys.join(", ")}], hasPluginConfig: ${!!api.pluginConfig}${usedFallback ? ", recoveredFromFullConfig: true" : ""})`);
+  // Determine which config source was used
+  const configSource = hasDirectConfig ? "pluginConfig"
+    : fallbackPluginCfg?.gatewayToken ? "api.config.plugins.entries"
+    : fallbackGatewayToken ? "api.config.gateway.auth"
+    : envGatewayToken ? "process.env.OPENCLAW_GATEWAY_TOKEN"
+    : "none";
+
+  // Diagnostic logging — always, so we can trace every load
+  if (!hasDirectConfig) {
+    api.logger.warn(`agent-relay: FALLBACK LOAD — pluginConfig empty, api.config keys: [${fullCfgKeys.join(", ")}], fallbackPluginCfg: ${!!fallbackPluginCfg}, fallbackGatewayToken: ${!!fallbackGatewayToken}, envGatewayToken: ${!!envGatewayToken}, configSource: ${configSource}`);
+  }
+  api.logger.info(`agent-relay: plugin loaded (configSource: ${configSource}, hasAuthToken: ${!!authToken}, hasGatewayToken: ${!!gatewayToken}, pluginConfigKeys: [${configKeys.join(", ")}])`);
 
   if (!authToken && !gatewayToken) {
-    api.logger.warn("agent-relay: missing config (authToken + gatewayToken) — no plugin config and no fallback available, tools will not be registered");
+    api.logger.warn("agent-relay: ALL config sources exhausted (pluginConfig, api.config, env) — tools will not be registered");
     return;
   }
 
@@ -338,7 +343,7 @@ export default function agentRelay(api: OpenClawPluginApi) {
     api.logger.info("agent-relay: no authToken — HTTP server will be disabled, tools still available");
   }
   if (!gatewayToken) {
-    api.logger.warn("agent-relay: missing config.gatewayToken — will fall back to system events only");
+    api.logger.warn("agent-relay: no gatewayToken from any source — tool calls will fail at execution time");
   }
 
   const port = pluginCfg.port ?? fallbackPluginCfg?.port ?? 18790;
