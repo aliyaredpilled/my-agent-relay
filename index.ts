@@ -318,13 +318,15 @@ export default function agentRelay(api: OpenClawPluginApi) {
   // Level 3: read config from disk when all else fails
   let diskPluginCfg: PluginConfig | undefined;
   let diskGatewayToken: string | undefined;
+  let diskBindings: any[] | undefined;
   if (!hasDirectConfig && !fallbackPluginCfg) {
     try {
       const configPath = join(api.rootDir ?? process.env.HOME ?? "/home/timur", ".openclaw", "openclaw.json");
       const diskCfg = JSON.parse(readFileSync(configPath, "utf8"));
       diskPluginCfg = diskCfg?.plugins?.entries?.["agent-relay"]?.config as PluginConfig | undefined;
       diskGatewayToken = diskCfg?.gateway?.auth?.token as string | undefined;
-      api.logger.info(`agent-relay: disk config loaded (hasPluginEntries: ${!!diskPluginCfg}, hasGatewayToken: ${!!diskGatewayToken})`);
+      diskBindings = diskCfg?.bindings as any[] | undefined;
+      api.logger.info(`agent-relay: disk config loaded (hasPluginEntries: ${!!diskPluginCfg}, hasGatewayToken: ${!!diskGatewayToken}, hasBindings: ${!!diskBindings?.length})`);
     } catch (err) {
       api.logger.warn(`agent-relay: disk config read failed: ${err}`);
     }
@@ -351,7 +353,7 @@ export default function agentRelay(api: OpenClawPluginApi) {
 
   // Diagnostic logging — always, so we can trace every load
   if (!hasDirectConfig) {
-    api.logger.warn(`agent-relay: FALLBACK LOAD — pluginConfig empty, api.config keys: [${fullCfgKeys.join(", ")}], fallbackPluginCfg: ${!!fallbackPluginCfg}, diskPluginCfg: ${!!diskPluginCfg}, fallbackGatewayToken: ${!!fallbackGatewayToken}, diskGatewayToken: ${!!diskGatewayToken}, envGatewayToken: ${!!envGatewayToken}, configSource: ${configSource}, hasAliases: ${!!mergedCfg.targetAliases}, hasAllowedTargets: ${!!mergedCfg.allowedTargets}`);
+    api.logger.warn(`agent-relay: FALLBACK LOAD — pluginConfig empty, api.config keys: [${fullCfgKeys.join(", ")}], fallbackPluginCfg: ${!!fallbackPluginCfg}, diskPluginCfg: ${!!diskPluginCfg}, diskBindings: ${!!diskBindings?.length}, fallbackGatewayToken: ${!!fallbackGatewayToken}, diskGatewayToken: ${!!diskGatewayToken}, envGatewayToken: ${!!envGatewayToken}, configSource: ${configSource}, hasAliases: ${!!mergedCfg.targetAliases}, hasAllowedTargets: ${!!mergedCfg.allowedTargets}`);
   }
   api.logger.info(`agent-relay: plugin loaded (configSource: ${configSource}, hasAuthToken: ${!!authToken}, hasGatewayToken: ${!!gatewayToken}, pluginConfigKeys: [${configKeys.join(", ")}])`);
 
@@ -375,15 +377,16 @@ export default function agentRelay(api: OpenClawPluginApi) {
   const defaultTimezone = mergedCfg.defaultTimezone ?? "Asia/Yekaterinburg";
   const { enqueueSystemEvent, requestHeartbeatNow } = api.runtime.system;
 
-  // Build agentId+channel → accountId lookup from bindings
+  // Build agentId+channel → accountId lookup from bindings (with disk fallback)
   const accountIdMap = new Map<string, string>();
-  const bindings = (api.config as any)?.bindings ?? [];
+  const bindings = (api.config as any)?.bindings ?? diskBindings ?? [];
   for (const b of bindings) {
     if (b.agentId && b.match?.channel && b.match?.accountId) {
       accountIdMap.set(`${b.agentId}:${b.match.channel}`, b.match.accountId);
     }
   }
-  api.logger.info(`agent-relay: accountId map: ${JSON.stringify(Object.fromEntries(accountIdMap))}`);
+  const bindingsSource = ((api.config as any)?.bindings?.length) ? "api.config" : (diskBindings?.length ? "disk" : "empty");
+  api.logger.info(`agent-relay: accountId map: ${JSON.stringify(Object.fromEntries(accountIdMap))} (source: ${bindingsSource})`);
 
   // Cache sender metadata from message_received for auto-sign enrichment
   const senderCache = new Map<string, { name?: string; username?: string }>();
