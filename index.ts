@@ -528,6 +528,16 @@ export default function agentRelay(api: OpenClawPluginApi) {
 
         api.logger.info(`agent-relay: notify_agent from=${callerKey ?? "unknown"} to=${params.to ?? ""}(${resolvedKey}) sign=${shouldSign}`);
 
+        // Pre-enqueue message into target session as safety net:
+        // if model fallback replaces the agent turn body with "Continue where you left off",
+        // the original message is already in session history and won't be lost.
+        try {
+          enqueueSystemEvent(signedMessage, { sessionKey: resolvedKey });
+          api.logger.info(`agent-relay: pre-enqueued message into ${resolvedKey} (safety net for model fallback)`);
+        } catch (err) {
+          api.logger.warn(`agent-relay: enqueueSystemEvent failed (non-fatal): ${err}`);
+        }
+
         // Derive channel, delivery target, and accountId from target sessionKey
         // Format: agent:<agentId>:<channel>:[accountId:]<peerType>:<peerId>
         const targetParts = resolvedKey.match(/^agent:([^:]+):([^:]+):(?:[^:]+:)*?(direct|group):(.+)$/);
