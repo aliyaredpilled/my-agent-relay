@@ -321,7 +321,8 @@ export default function agentRelay(api: OpenClawPluginApi) {
   let diskBindings: any[] | undefined;
   if (!hasDirectConfig && !fallbackPluginCfg) {
     try {
-      const configPath = join(api.rootDir ?? process.env.HOME ?? "/home/timur", ".openclaw", "openclaw.json");
+      // api.rootDir points to plugin dir during fallback, not $HOME — always use $HOME
+      const configPath = join(process.env.HOME ?? "/home/timur", ".openclaw", "openclaw.json");
       const diskCfg = JSON.parse(readFileSync(configPath, "utf8"));
       diskPluginCfg = diskCfg?.plugins?.entries?.["agent-relay"]?.config as PluginConfig | undefined;
       diskGatewayToken = diskCfg?.gateway?.auth?.token as string | undefined;
