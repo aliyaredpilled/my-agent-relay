@@ -305,32 +305,53 @@ export default function agentRelay(api: OpenClawPluginApi) {
   const configKeys = Object.keys(pluginCfg);
   const hasDirectConfig = configKeys.length > 0;
 
-  // --- Config recovery chain (3 levels) ---
+  // --- Config recovery chain (4 levels) ---
   // Level 1: pluginConfig (normal path — OpenClaw passes plugin entries)
   // Level 2: api.config (full OpenClaw config — may survive fallback loads)
-  // Level 3: process.env (systemd always has OPENCLAW_GATEWAY_TOKEN)
+  // Level 3: disk read (~/.openclaw/openclaw.json — always has full config)
+  // Level 4: process.env (systemd always has OPENCLAW_GATEWAY_TOKEN)
   const fullCfg = (api.config as any) ?? {};
   const fullCfgKeys = Object.keys(fullCfg);
   const fallbackPluginCfg = fullCfg?.plugins?.entries?.["agent-relay"]?.config as PluginConfig | undefined;
   const fallbackGatewayToken = fullCfg?.gateway?.auth?.token as string | undefined;
+
+  // Level 3: read config from disk when all else fails
+  let diskPluginCfg: PluginConfig | undefined;
+  let diskGatewayToken: string | undefined;
+  if (!hasDirectConfig && !fallbackPluginCfg) {
+    try {
+      const configPath = join(api.rootDir ?? process.env.HOME ?? "/home/timur", ".openclaw", "openclaw.json");
+      const diskCfg = JSON.parse(readFileSync(configPath, "utf8"));
+      diskPluginCfg = diskCfg?.plugins?.entries?.["agent-relay"]?.config as PluginConfig | undefined;
+      diskGatewayToken = diskCfg?.gateway?.auth?.token as string | undefined;
+      api.logger.info(`agent-relay: disk config loaded (hasPluginEntries: ${!!diskPluginCfg}, hasGatewayToken: ${!!diskGatewayToken})`);
+    } catch (err) {
+      api.logger.warn(`agent-relay: disk config read failed: ${err}`);
+    }
+  }
+
   const envGatewayToken = process.env.OPENCLAW_GATEWAY_TOKEN;
 
-  const authToken = pluginCfg.authToken ?? fallbackPluginCfg?.authToken;
-  const gatewayToken = pluginCfg.gatewayToken
-    ?? fallbackPluginCfg?.gatewayToken
+  // Merge config: pluginConfig → api.config → disk → env
+  const mergedCfg = hasDirectConfig ? pluginCfg : (fallbackPluginCfg ?? diskPluginCfg ?? {} as PluginConfig);
+  const authToken = mergedCfg.authToken;
+  const gatewayToken = mergedCfg.gatewayToken
     ?? fallbackGatewayToken
+    ?? diskGatewayToken
     ?? envGatewayToken;
 
   // Determine which config source was used
   const configSource = hasDirectConfig ? "pluginConfig"
-    : fallbackPluginCfg?.gatewayToken ? "api.config.plugins.entries"
+    : fallbackPluginCfg ? "api.config.plugins.entries"
+    : diskPluginCfg ? "disk"
     : fallbackGatewayToken ? "api.config.gateway.auth"
+    : diskGatewayToken ? "disk.gateway.auth"
     : envGatewayToken ? "process.env.OPENCLAW_GATEWAY_TOKEN"
     : "none";
 
   // Diagnostic logging — always, so we can trace every load
   if (!hasDirectConfig) {
-    api.logger.warn(`agent-relay: FALLBACK LOAD — pluginConfig empty, api.config keys: [${fullCfgKeys.join(", ")}], fallbackPluginCfg: ${!!fallbackPluginCfg}, fallbackGatewayToken: ${!!fallbackGatewayToken}, envGatewayToken: ${!!envGatewayToken}, configSource: ${configSource}`);
+    api.logger.warn(`agent-relay: FALLBACK LOAD — pluginConfig empty, api.config keys: [${fullCfgKeys.join(", ")}], fallbackPluginCfg: ${!!fallbackPluginCfg}, diskPluginCfg: ${!!diskPluginCfg}, fallbackGatewayToken: ${!!fallbackGatewayToken}, diskGatewayToken: ${!!diskGatewayToken}, envGatewayToken: ${!!envGatewayToken}, configSource: ${configSource}, hasAliases: ${!!mergedCfg.targetAliases}, hasAllowedTargets: ${!!mergedCfg.allowedTargets}`);
   }
   api.logger.info(`agent-relay: plugin loaded (configSource: ${configSource}, hasAuthToken: ${!!authToken}, hasGatewayToken: ${!!gatewayToken}, pluginConfigKeys: [${configKeys.join(", ")}])`);
 
@@ -346,12 +367,12 @@ export default function agentRelay(api: OpenClawPluginApi) {
     api.logger.warn("agent-relay: no gatewayToken from any source — tool calls will fail at execution time");
   }
 
-  const port = pluginCfg.port ?? fallbackPluginCfg?.port ?? 18790;
-  const gatewayPort = pluginCfg.gatewayPort ?? fallbackPluginCfg?.gatewayPort ?? 18789;
-  const allowedTargets = pluginCfg.allowedTargets ?? fallbackPluginCfg?.allowedTargets;
-  const targetAliases = pluginCfg.targetAliases ?? fallbackPluginCfg?.targetAliases ?? {};
-  const autoSignConfig = pluginCfg.autoSign ?? fallbackPluginCfg?.autoSign ?? {};
-  const defaultTimezone = pluginCfg.defaultTimezone ?? fallbackPluginCfg?.defaultTimezone ?? "Asia/Yekaterinburg";
+  const port = mergedCfg.port ?? 18790;
+  const gatewayPort = mergedCfg.gatewayPort ?? 18789;
+  const allowedTargets = mergedCfg.allowedTargets;
+  const targetAliases = mergedCfg.targetAliases ?? {};
+  const autoSignConfig = mergedCfg.autoSign ?? {};
+  const defaultTimezone = mergedCfg.defaultTimezone ?? "Asia/Yekaterinburg";
   const { enqueueSystemEvent, requestHeartbeatNow } = api.runtime.system;
 
   // Build agentId+channel → accountId lookup from bindings
