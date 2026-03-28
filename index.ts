@@ -473,6 +473,8 @@ export default function agentRelay(api: OpenClawPluginApi) {
         required: ["message"],
       },
       async execute(_id: string, params: { to?: string; sessionKey?: string; message: string }) {
+        api.logger.info(`agent-relay: notify_agent called (to: ${params.to ?? "-"}, sessionKey: ${params.sessionKey ?? "-"}, aliases: [${Object.keys(targetAliases).join(", ")}], configSource: ${configSource})`);
+
         // Resolve target: alias → full sessionKey
         const resolvedKey = params.to
           ? targetAliases[params.to]
@@ -482,6 +484,7 @@ export default function agentRelay(api: OpenClawPluginApi) {
           const hint = params.to
             ? `Unknown alias "${params.to}". Available: ${Object.keys(targetAliases).join(", ") || "none"}`
             : "Missing sessionKey or to parameter.";
+          api.logger.warn(`agent-relay: notify_agent FAILED — ${hint}`);
           return {
             content: [{ type: "text" as const, text: hint }],
             isError: true,
