@@ -524,7 +524,8 @@ export default function agentRelay(api: OpenClawPluginApi) {
             if (parts.length) prefix += `[client: ${parts.join(" ")}]\n`;
           }
         }
-        const signedMessage = prefix + params.message;
+        const suffix = "\n\n[system: your reply goes directly to the user's chat. Do not use notify_agent or any messaging tools to respond — just reply normally.]";
+        const signedMessage = prefix + params.message + suffix;
 
         api.logger.info(`agent-relay: notify_agent from=${callerKey ?? "unknown"} to=${params.to ?? ""}(${resolvedKey}) sign=${shouldSign}`);
 
